@@ -1,7 +1,6 @@
 ---
 title: "Birth weight - Heritability estimate and GWAS"
 author: "Caelinn James"
-date: "21 March 2021"
 output:
   pdf_document: default
   html_document: default
