@@ -1,0 +1,397 @@
+---
+title: "Birth weight - Heritability estimate and GWAS"
+author: "Caelinn James"
+date: "21 March 2021"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+**Written for R `r getRversion()`, last updated `r format(Sys.time(), '%d/%m/%y')`**  
+<br/>
+
+### Load packages
+```{r, message = FALSE, warning = FALSE}
+library(RODBC)
+library(data.table)
+library(stringr)
+library(splitstackshape)
+library(qqman)
+```
+<br/>
+
+### Connect to the database
+
+Note that from database front end version 2.22, it is important to click "Make R Friendly" in the queries section before running the analysis, or loading the pedigree will not work (will not work at all for prior front end versions)
+
+```{r}
+dv <- "C:/Users/s1944058/Documents/Sheep/Database/SoaySheep2.30.accdb"
+con <- odbcConnectAccess2007(dv)
+tbls <- sqlTables(con)
+sheep <- sqlFetch(con,"sys_SheepPlusBirthInfo")
+```
+
+Check to see if the sheep file has loaded correctly (don't worry about negative IDs or lots of NAs)... 
+```{r}
+head(sheep)
+```
+<br/> 
+
+### Filter the data
+Remove sheep that do not have their birth weight recorded  
+```{r}
+births <- sheep[!(is.na(sheep$BirthWt)),]
+```
+Remove sheep born 1985 or earlier
+``` {r}
+births <- births[which(births$BirthYear>1985),]
+```
+Remove sheep that do not have their capture age recorded, or were weighed younger than 2 days (as these sheep were likely already dead), or older than 10 days (as the relationship between age and weight stops being linear at this point)  
+```{r}
+births <- births[!(is.na(births$CapAge)),]
+births <- births[-(which(births$CapAge < 2|births$CapAge >10)),]
+```
+Remove any sheep who died within one month of being born
+```{r}
+births <- births[-(which(births$BirthYear == births$DeathYear & births$BirthMonth == births$DeathMonth) ),]
+```
+To ensure the same individuals are used for all three heritability estimates, remove any sheep that are not included in the genotype data
+```{r}
+SNPs_50K <- read.table("C:/Users/s1944058/Documents/Sheep/50KSNP/Plates_1to87_QC3.fam")
+births <- births[which(births$ID %in% SNPs_50K$V2),]
+SNPs_HD <- read.table("C:/Users/s1944058/Documents/Sheep/HDSNP/HD_QC.fam")
+births <- births[which(births$ID %in% SNPs_HD$V2),]
+
+```
+
+<br/>
+
+
+
+### Filter data for the model
+
+Birth date (what day in the year they were born on)
+```{r}
+births$BirthDate <- paste0(births$BirthYear,"/",births$BirthMonth,"/",births$BirthDay)
+births$Date[!is.na(births$BirthMonth)] <- as.numeric(format(as.Date(births[!is.na(births$BirthMonth),"BirthDate"]),"%j"))
+```
+
+Change the notation of castrated males to normal males (no need to differentiate for this model) and remove sheep with no sex recorded
+```{r}
+births$Sex[births$Sex == 3] <- 2
+births <- births[!is.na(births$Sex),]
+```
+
+Population density the year before birth (this is why we excluded sheep born in 1985!)
+```{r}
+Villdens <- sqlFetch(con,"HirtaVillPop")
+Villdens$BirthYear <- Villdens$Year + 1
+births <- merge(births,Villdens[,c("VillTotal","BirthYear")],by="BirthYear",all.x=T)
+```
+
+Mum ID - this needs to be modelled as a quadratic
+```{r}
+mums <- as.data.frame(unique(births[,c("MumID")]))
+colnames(mums) <- "MumID"
+mums <- merge(mums,sheep,by.x="MumID",by.y="ID",all.x=TRUE,all.y=FALSE)
+mums$MumBirthDate <- paste0(mums$BirthYear,"/",mums$BirthMonth,"/",mums$BirthDay)
+mums <- mums[,c("MumID","MumBirthDate")]
+mums <- unique(mums)
+mums <- mums[-which(mums$MumBirthDate %like% "NA"),]
+births <- merge(births,mums,by="MumID",all.x=TRUE)
+births[-which(births$MumBirthDate %like% "NA"| is.na(births$MumBirthDate)),"MumAge"] <-(difftime(as.Date(births[-which(births$MumBirthDate %like% "NA"| is.na(births$MumBirthDate)),"BirthDate"], format = "%Y/%m/%d") , as.Date(births[-which(births$MumBirthDate %like% "NA"| is.na(births$MumBirthDate)),"MumBirthDate"], format = "%Y/%m/%d")))/365
+births$MumAge <- as.integer(births$MumAge)
+births$MumAge2 <- births$MumAge^2
+births <- births[!is.na(births$MumAge),]
+births <- births[which(births$SibCount < 2),]
+
+```
+
+
+This leaves us with __`r nrow(births)`__ individuals, and the following distribution of birth weights:
+```{r}
+hist(births$BirthWt, xlab="Weight (kg)",main="Histogram of birth weights of Soay sheep lambs")
+```
+<br/>
+We will now save a list of phenotypes, fixed Effects_50K and random Effects_50K.
+```{r}
+BirthweightPhenotypes <- cbind(rep(1,nrow(births)),as.character(births$ID),as.character(births$BirthWt))
+
+BirthweightAssoc <- cbind(rep(1,nrow(births)),as.character(births$ID),births$Sex,births$SibCount)
+
+BirthweightQAssoc <-cbind(rep(1,nrow(births)),as.character(births$ID),births$VillTotal,births$MumAge,births$MumAge2,births$Date,births$CapAge)
+
+BirthweightRandom <-cbind(rep(1,nrow(births)),as.character(births$ID),births$BirthYear,births$MumID)
+colnames(BirthweightRandom) <- c("FID","IID","BirthYear","MumID")
+
+
+write.table(BirthweightPhenotypes,file="C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/BirthWeight/BirthWtPhenotypes.txt",row.names = F,col.names = F,quote = F)
+
+write.table(BirthweightAssoc,file="C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/BirthWeight/BirthWtAssoc.txt",row.names = F,col.names = F,quote = F)
+
+write.table(BirthweightQAssoc,file="C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/BirthWeight/BirthWtQAssoc.txt",row.names = F,col.names = F,quote = F)
+
+write.table(BirthweightRandom,file="C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/BirthWeight/BirthWtRandom.txt",row.names = F,col.names = T,quote = F)
+```
+<br/> 
+
+## Heritability Estimates  
+### 50K  
+>#!/bin/sh    
+>#\$\ -cwd  
+>#\$\ -l h_rt=1:00:00  
+>#\$\ -pe sharedmem 1  
+>#\$\ -l h_vmem=100G  
+>#\$\ -M s1944058@sms.ed.ac.uk  
+>#\$\ -m baes    
+>. /etc/profile.d/modules.sh  
+>  
+>module load igmm/apps/dissect/1.15.2c  
+>module load igmm/apps/plink/1.90b4  
+>  
+>mpirun -np 8 dissect.mpich  \-\-reml \-\-bfile ../InputData/Plates_1to87_QC3  \-\-pheno BirthWtPhenotypes.txt \-\-pheno-col 1 \-\-blue \-\-covar BirthWtAssoc.txt \-\-qcovar BirthWtQAssoc.txt \-\-random-effects BirthWtRandom.txt \-\-random-effects-cols 1 2 \-\-out 50K/BirthWt_50K_H2  
+>  
+>if [[ -f 50K/BirthWt_50K_H2.badsnps ]]  
+>then    
+>plink \-\-bfile ../InputData/Plates_1to87_QC3 \-\-sheep \-\- exclude 50K/BirthWt_50K_H2.badsnps \-\-make-bed \-\- out 50K/BirthWt_50K_H2  
+>
+>mpirun -np 8 dissect.mpich  \-\-reml \-\-bfile 50K/BirthWt_50K_H2 \-\-pheno BirthWtPhenotypes.txt \-\-pheno-col 1 \-\-blue \-\-covar BirthWtAssoc.txt \-\-qcovar BirthWtQAssoc.txt \-\-random-effects BirthWtRandom.txt \-\-random-effects-cols 1 2 \-\-out 50K/BirthWt_50K_H2  
+>fi 
+> 
+>mpirun -np 8 dissect.mpich \-\-reml \-\-bfile ../InputData/Plates_1to87_QC3 \-\-pheno BirthWtPhenotypes.txt \-\-pheno-col 1 \-\-blue \-\-random-effects BirthWtRandom.txt \-\-random-effects-cols 1 2 \-\-out 50K/BirthWt_50K_TotalPhenotypeVariance  
+>  
+>if [[ -f 50K/BirthWt_50K_TotalPhenotypeVariance.badsnps ]]   
+>then   
+>plink \-\-bfile ../InputData/Plates_1to87_QC3 \-\-sheep \-\- exclude 50K/BirthWt_50K_TotalPhenotypeVariance.badsnps \-\-make-bed \-\- out 50K/BirthWt_50K_TotalPhenotypeVariance  
+>  
+>mpirun -np 8 dissect.mpich  \-\-reml \-\-bfile 50K/BirthWt_50K_TotalPhenotypeVariance \-\-pheno BirthWtPhenotypes.txt \-\-pheno-col 1 \-\-blue \-\-random-effects BirthWtRandom.txt \-\-random-effects-cols 1 2 \-\-out 50K/BirthWt_50K_TotalPhenotypeVariance  
+>fi  
+
+```{r,include=FALSE}
+Assoc <- read.table("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/BirthWeight/50K/BirthWt_50K_H2.blue.discrete",header=TRUE)
+Assoc$NAME <- c("Sex","Twins","Triplets")
+QAssoc <- read.table("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/BirthWeight/50K/BirthWt_50K_H2.blue.quantitative",header=TRUE)
+QAssoc$NAME <- c("Population size","Mum Age","Mum Age^2","Date","Age (days)")
+FixedEffects_50K <- rbind(Assoc,QAssoc)
+
+Random <- read.csv("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/BirthWeight/50K/BirthWt_50K_H2.reml")
+RandomEffects_50K <- cSplit(Random,"X...Summary.results.",sep= " ")
+RandomEffects_50K <- RandomEffects_50K[c(2:5,8),1:3]
+colnames(RandomEffects_50K) <- colnames(FixedEffects_50K)
+```
+```{r}
+FixedEffects_50K
+RandomEffects_50K
+```
+
+### HD  
+>#!/bin/sh    
+>#\$\ -cwd  
+>#\$\ -l h_rt=1:00:00  
+>#\$\ -pe sharedmem 1  
+>#\$\ -l h_vmem=100G  
+>#\$\ -M s1944058@sms.ed.ac.uk  
+>#\$\ -m baes    
+>. /etc/profile.d/modules.sh    
+>  
+>module load igmm/apps/dissect/1.15.2c  
+>module load igmm/apps/plink/1.90b4  
+>  
+>mpirun -np 8 dissect.mpich  \-\-reml \-\-bfile ../InputData/HD_QC \-\-pheno BirthWtPhenotypes.txt \-\-pheno-col 1 \-\-blue \-\-covar BirthWtAssoc.txt \-\-qcovar BirthWtQAssoc.txt \-\-random-effects BirthWtRandom.txt \-\-random-effects-cols 1 2 \-\-out HD/BirthWt_HD_H2  
+>  
+>if [[ -f HD/BirthWt_HD_H2.badsnps ]]  
+>then    
+>plink \-\-bfile ../InputData/HD_QC \-\-sheep \-\- exclude HD/BirthWt_HD_H2.badsnps \-\-make-bed \-\- out HD/BirthWt_HD_H2  
+>
+>mpirun -np 8 dissect.mpich  \-\-reml \-\-bfile HD/BirthWt_HD_H2 \-\-pheno BirthWtPhenotypes.txt \-\-pheno-col 1 \-\-blue \-\-covar BirthWtAssoc.txt \-\-qcovar BirthWtQAssoc.txt \-\-random-effects BirthWtRandom.txt \-\-random-effects-cols 1 2 \-\-out HD/BirthWt_HD_H2  
+>fi 
+>  
+>mpirun -np 8 dissect.mpich  \-\-reml \-\-bfile ../InputData/HD_QC \-\-pheno BirthWtPhenotypes.txt \-\-pheno-col 1 \-\-blue \-\-random-effects BirthWtRandom.txt \-\-random-effects-cols 1 2 \-\-out HD/BirthWt_HD_TotalPhenotypeVariance  
+>  
+>if [[ -f HD/BirthWt_HD_TotalPhenotypeVariance.badsnps ]]   
+>then    
+>plink \-\-bfile ../InputData/HD_QC \-\-sheep \-\- exclude HD/BirthWt_HD_TotalPhenotypeVariance.badsnps \-\-make-bed \-\- out HD/BirthWt_HD_TotalPhenotypeVariance  
+>  
+>mpirun -np 8 dissect.mpich  \-\-reml \-\-bfile HD/BirthWt_HD_TotalPhenotypeVariance \-\-pheno BirthWtPhenotypes.txt \-\-pheno-col 1 \-\-blue \-\-random-effects BirthWtRandom.txt \-\-random-effects-cols 1 2 \-\-out HD/BirthWt_HD_TotalPhenotypeVariance  
+>fi  
+
+```{r,include=FALSE}
+Assoc <- read.table("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/BirthWeight/HD/BirthWt_HD_H2.blue.discrete",header=TRUE)
+Assoc$NAME <- c("Sex","Twins","Triplets")
+QAssoc <- read.table("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/BirthWeight/HD/BirthWt_HD_H2.blue.quantitative",header=TRUE)
+QAssoc$NAME <- c("Population size","Mum Age","Mum Age^2","Date","Age (days)")
+FixedEffects_HD <- rbind(Assoc,QAssoc)
+
+Random <- read.csv("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/BirthWeight/HD/BirthWt_HD_H2.reml")
+RandomEffects_HD <- cSplit(Random,"X...Summary.results.",sep= " ")
+RandomEffects_HD <- RandomEffects_HD[c(2:5,8),1:3]
+colnames(RandomEffects_HD) <- colnames(FixedEffects_HD)
+```
+```{r}
+FixedEffects_HD
+RandomEffects_HD
+```
+
+### GWAS  
+>#!/bin/sh  
+>#\$\ -cwd  
+>#\$\ -l h_rt=2:00:00  
+>#\$\ -pe sharedmem 1  
+>#\$\ -l h_vmem=200G  
+>#\$\ -t 1-26  
+>#\$\ -tc 5  
+>#\$\ -M s1944058@sms.ed.ac.uk  
+>#\$\ -m baes   
+>. /etc/profile.d/modules.sh  
+>
+>module load igmm/apps/dissect/1.15.2c  
+>module load igmm/apps/plink/1.90b4  
+>  
+>i=\$\SGE_TASK_ID  
+>  
+>plink \-\-bfile ../InputData/Plates_1to87_QC3 \-\-sheep \-\-not-chr \$\{i},X \-\-keep BirthWtPhenotypes.txt \-\-make-bed \-\-out 50K/NoChr\$\{i}  
+>  
+>mpirun -np 8 dissect.mpich  \-\-make-grm \-\-bfile 50K/NoChr\$\{i} \-\-out 50K/NoChr\$\{i}_GRM  
+>  
+>echo "50K/Chr\$\{i} 50K/NoChr\$\{i}_GRM" > 50K/GWAS_GRM\$\{i}.txt  
+>  
+>plink \-\-bfile ../InputData/Plates_1to87_QC3 \-\-sheep \-\-chr \$\{i} \-\-keep BirthWtPhenotypes.txt \-\-make-bed \-\-out 50K/Chr\$\{i}  
+>  
+>if [[ -f 50K/NoChr\$\{i}_GRM.badsnps ]]  
+>then  
+>plink \-\-bfile 50K/NoChr\$\{i} \-\-sheep \-\-exclude 50K/NoChr\$\{i}_GRM.badsnps  \-\-make-bed \-\-out 50K/NoChr\$\{i}_2  
+>  
+>mpirun -np 8 dissect.mpich  \-\-make-grm \-\-bfile 50K/NoChr\$\{i}_2 \-\-out 50K/NoChr\$\{i}_GRM
+>  
+>fi  
+>  
+>mpirun -np 8 dissect.mpich  \-\-gwas \-\-bfile-grm-list 50K/GWAS_GRM\$\{i}.txt \-\-pheno BirthWtPhenotypes.txt \-\-covar BirthWtAssoc.txt \-\-qcovar BirthWtQAssoc.txt \-\-random-effects BirthWtRandom.txt \-\-random-effects-cols 1,2  \-\-out 50K/BirthWt_50K_GWAS_Chr\$\{i}  
+>  
+>if [[ -f 50K/BirthWt_50K_GWAS_Chr\$\{i}.badsnps ]]  
+>then  
+>plink \-\-bfile 50K/Chr\$\{i} \-\-sheep \-\-exclude 50K/BirthWt_50K_GWAS_Chr\$\{i}.badsnps \-\-make-bed \-\-out 50K/Chr\$\{i}_2  
+>  
+>echo "50K/Chr\$\{i}_2 50K/NoChr\$\{i}_GRM" > 50K/GWAS_GRM\$\{i}.txt  
+>  
+> mpirun -np 8 dissect.mpich  \-\-gwas \-\-bfile-grm-list 50K/GWAS_GRM\$\{i}.txt \-\-pheno BirthWtPhenotypes.txt \-\-covar BirthWtAssoc.txt \-\-qcovar BirthWtQAssoc.txt \-\-random-effects BirthWtRandom.txt \-\-random-effects-cols 1,2 \-\-out 50K/BirthWt_50K_GWAS_Chr\$\{i}    
+> fi 
+
+```{r,fig.width=14}
+files = list.files(pattern="BirthWt_50K_GWAS_Chr",recursive=TRUE)
+
+SNPresults = do.call(rbind, lapply(files, function(x) read.table(x,header=T)))
+bimFile <- read.table("C:/Users/s1944058/Documents/Sheep/50KSNP/Plates_1to87_QC3.bim",header=F)
+
+GWAS50KResults <- merge(bimFile,SNPresults[,c("SNP","PV"),],by.x="V2",by.y="SNP",all.x=FALSE,all.y=TRUE)
+colnames(GWAS50KResults) <- c("SNP","Chr","V3","Pos","Ref","Minor","PV")
+
+GWAS50KResults$Chr <- as.numeric(GWAS50KResults$Chr)
+par(mfrow=c(1,2))
+manhattan(GWAS50KResults,chr="Chr",bp="Pos",p="PV",snp="SNP", main = "Birth Weight Manhattan plot (50K)", genomewideline = -log10(0.05/20082),suggestiveline = FALSE,ylim=c(0,6))
+qq(GWAS50KResults$PV,main="Birth Weight QQ plot (50K)")
+```
+**None of the SNPs are signficant!**  
+<br/>
+
+### Imputed SNP data
+
+>#!/bin/sh  
+>#\$\ -cwd  
+>#\$\ -l h_rt=3:00:00  
+>#\$\ -pe sharedmem 1  
+>#\$\ -l h_vmem=200G  
+>#\$\ -t 1-26  
+>#\$\ -tc 5  
+>#\$\ -M s1944058@sms.ed.ac.uk  
+>#\$\ -m baes   
+>. /etc/profile.d/modules.sh  
+>
+>module load igmm/apps/dissect/1.15.2c  
+>module load igmm/apps/plink/1.90b4  
+>  
+>i=\$\SGE_TASK_ID  
+>  
+>plink \-\-bfile ../InputData/HD_QC \-\-sheep \-\-not-chr \$\{i},X \-\-keep BirthWtPhenotypes.txt \-\-make-bed \-\-out HD/NoChr\$\{i}  
+>  
+>mpirun -np 8 dissect.mpich  \-\-make-grm \-\-bfile HD/NoChr\$\{i} \-\-out HD/NoChr\$\{i}_GRM  
+>  
+>echo "HD/Chr\$\{i} HD/NoChr\$\{i}_GRM" > HD/GWAS_GRM\$\{i}.txt  
+>  
+>plink \-\-bfile ../InputData/HD_QC \-\-sheep \-\-chr \$\{i} \-\-keep BirthWtPhenotypes.txt \-\-make-bed \-\-out HD/Chr\$\{i}  
+>  
+>if [[ -f HD/NoChr\$\{i}_GRM.badsnps ]]  
+>then  
+>plink \-\-bfile HD/NoChr\$\{i} \-\-sheep \-\-exclude HD/NoChr\$\{i}_GRM.badsnps  \-\-make-bed \-\-out HD/NoChr\$\{i}_2  
+>  
+>mpirun -np 8 dissect.mpich  \-\-make-grm \-\-bfile HD/NoChr\$\{i}_2 \-\-out HD/NoChr\$\{i}_GRM  
+>  
+>fi  
+>  
+>mpirun -np 8 dissect.mpich  \-\-gwas \-\-bfile-grm-list HD/GWAS_GRM\$\{i}.txt \-\-pheno BirthWtPhenotypes.txt \-\-covar BirthWtAssoc.txt \-\-qcovar BirthWtQAssoc.txt \-\-random-effects BirthWtRandom.txt \-\-random-effects-cols 1,2  \-\-out HD/BirthWt_HD_GWAS_Chr\$\{i}  
+>  
+>if [[ -f HD/BirthWt_HD_GWAS_Chr\$\{i}.badsnps ]]  
+>then  
+>plink \-\-bfile HD/Chr\$\{i} \-\-sheep \-\-exclude HD/BirthWt_HD_GWAS_Chr\$\{i}.badsnps \-\-make-bed \-\-out HD/Chr\$\{i}_2  
+>
+>echo "HD/Chr\$\{i}_2 HD/NoChr\$\{i}_GRM" > HD/GWAS_GRM\$\{i}.txt  
+>  
+>mpirun -np 8 dissect.mpich  \-\-gwas \-\-bfile-grm-list HD/GWAS_GRM\$\{i}.txt \-\-pheno BirthWtPhenotypes.txt \-\-covar BirthWtAssoc.txt \-\-qcovar BirthWtQAssoc.txt \-\-random-effects BirthWtRandom.txt \-\-random-effects-cols 1,2  \-\-out HD/BirthWt_HD_GWAS_Chr\$\{i}    
+>fi 
+ 
+
+```{r,fig.width=14}
+files = list.files(pattern="BirthWt_HD_GWAS_Chr",recursive=TRUE)
+
+SNPresults = do.call(rbind, lapply(files, function(x) read.table(x,header=T)))
+bimFile <- read.table("C:/Users/s1944058/Documents/Sheep/HDSNP/HD_QC.bim",header=F)
+
+GWASHDResults <- merge(bimFile,SNPresults[,c("SNP","PV"),],by.x="V2",by.y="SNP",all.x=FALSE,all.y=TRUE)
+colnames(GWASHDResults) <- c("SNP","Chr","V3","Pos","Ref","Minor","PV")
+GWASHDResults$Chr <- as.numeric(GWASHDResults$Chr)
+par(mfrow=c(1,2))
+manhattan(GWASHDResults,chr="Chr",bp="Pos",p="PV",snp="SNP", main = "Birth Weight Manhattan plot (HD)", genomewideline = -log10(0.05/48635),suggestiveline = FALSE)
+qq(GWASHDResults$PV,main="Birth Weight QQ plot (HD)")
+```
+```{r} 
+SNPs <- GWASHDResults[which(GWASHDResults$PV < (0.05/48635) ),c("Chr","Pos","SNP","PV")]
+SNPs[order(SNPs$PV),]
+table(SNPs$Chr)
+```
+<br/>
+
+## **FINAL RESULTS**
+### 50K
+```{r,fig.width=14}
+RandomEffects_50K[nrow(RandomEffects_50K),]
+par(mfrow=c(1,2))
+manhattan(GWAS50KResults,chr="Chr",bp="Pos",p="PV",snp="SNP", main = "Birth Weight Manhattan plot (50K)", genomewideline = -log10(0.05/20082),suggestiveline = FALSE,ylim=c(0,7))
+qq(GWAS50KResults$PV,main="Birth Weight QQ plot (50K)")
+```
+
+### HD    
+```{r,fig.width=14}
+RandomEffects_HD[nrow(RandomEffects_HD),]
+par(mfrow=c(1,2))
+manhattan(GWASHDResults,chr="Chr",bp="Pos",p="PV",snp="SNP", main = "Birth Weight Manhattan plot (HD)", genomewideline = -log10(0.05/48635),suggestiveline = FALSE)
+qq(GWASHDResults$PV,main="Birth Weight QQ plot (HD)")
+```
+```{r, include=FALSE}
+png(file="C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/BirthWeight/Birthweight_GWAS.png",width=827,height=583)
+par(mfcol=c(2,2),oma=c(0,0,2,0))
+par(mar=c(0,5,3,3))
+manhattan(GWAS50KResults,chr="Chr",bp="Pos",p="PV",snp="SNP", main = "50K SNP data", genomewideline = -log10(0.05/20082),suggestiveline = FALSE,ylim=c(0,7))
+par(mar=c(5,7,3,5))
+qq(GWAS50KResults$PV,ylim=c(0,7),xlim=c(0,7))
+par(mar=c(0,5,3,3))
+
+manhattan(GWASHDResults,chr="Chr",bp="Pos",p="PV",snp="SNP", main = "Imputed SNP data", genomewideline = -log10(0.05/48635),suggestiveline = FALSE,ylim=c(0,7))
+par(mar=c(5,7,3,5))
+
+qq(GWASHDResults$PV,ylim=c(0,7),xlim=c(0,7))
+mtext("Birth weight GWAS",outer=TRUE,cex=1.5)
+
+dev.off()
+```
