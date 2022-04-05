@@ -1,7 +1,6 @@
 ---
 title: "Lamb hindleg length - Heritability estimate and GWAS"
 author: "Caelinn James"
-date: "10 April 2021"
 output:
  html_document: default
 ---
