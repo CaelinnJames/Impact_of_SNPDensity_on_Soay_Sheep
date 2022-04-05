@@ -1,0 +1,386 @@
+---
+title: "Adult Hindleg Length - Heritability estimate and GWAS Conditional Analysis"
+author: "Caelinn James"
+date: "02 April 2021"
+output:
+ html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+**Written for R `r getRversion()`, last updated `r format(Sys.time(), '%d/%m/%y')`**  
+<br/>
+
+This is a follow on from the adult hindleg length heritability estimate and GWAS script. The analysis identified peaks on chromosome 19 and 16. Here, we fit SNPs s74894.1 and s22142.1 to see how much of the variation they accounts for and to see if there are any close significant SNPs that are obscured by the original peaks.
+
+<br/>
+
+### Load packages
+```{r, message = FALSE, warning = FALSE}
+library(data.table)
+library(stringr)
+library(splitstackshape)
+library(qqman)
+```
+<br/>
+
+### Preparing files
+
+>#!/bin/sh  
+>#\$\ -cwd  
+>#\$\ -l h_rt=1:00:00  
+>#\$\ -pe sharedmem 1  
+>#\$\ -l h_vmem=100G  
+>#\$\ -M s1944058@sms.ed.ac.uk  
+>#\$\ -m baes   
+>  
+>. /etc/profile.d/modules.sh  
+>  
+>module load igmm/apps/plink/1.90b4 
+>module load igmm/apps/R/3.5.1  
+>R  
+>files = intersect(list.files(pattern="AdultHindLeg_HD_GWAS_Chr",recursive=TRUE),list.files(pattern=".gwas.snps",recursive=TRUE))  
+>SNPresults = do.call(rbind, lapply(files, function(x) read.table(x,header=T)))    
+>bimFile <- read.table("/exports/igmm/eddie/haley-soay/InputData/HD_QC.bim",header=F)    
+>GWASHDResults <- merge(bimFile,SNPresults[,c("SNP","PV","BETA"),],by.x="V2",by.y="SNP",all.x=FALSE,all.y=TRUE)  
+>colnames(GWASHDResults) <- c("SNP","Chr","V3","Pos","Ref","Minor","PV","BETA")   
+>SNPs <- GWASHDResults[which(GWASHDResults$PV < (0.05/48635) ),]  
+>SNPs <- SNPs[SNPs\$Chr %in% names(which(table(SNPs\$Chr)>1)),]  
+>SNPs <- SNPs[order(SNPs$PV),]  
+>SNPs <- SNPs[!duplicated(SNPs[,"Chr"]),]  
+>write.table(SNPs[,c("SNP")],"SNPs_HD.txt",row.names=FALSE,col.names=FALSE,quote=FALSE)  
+>  
+>files = intersect(list.files(pattern="AdultHindLeg_50K_GWAS_Chr",recursive=TRUE),list.files(pattern=".gwas.snps",recursive=TRUE))  
+>SNPresults = do.call(rbind, lapply(files, function(x) read.table(x,header=T)))  
+>bimFile <- read.table("/exports/igmm/eddie/haley-soay/InputData/Plates_1to87_QC3.bim",header=F)  
+>GWASHDResults <- merge(bimFile,SNPresults[,c("SNP","PV","BETA"),],by.x="V2",by.y="SNP",all.x=FALSE,all.y=TRUE)    
+>colnames(GWASHDResults) <- c("SNP","Chr","V3","Pos","Ref","Minor","PV","BETA")    
+>SNPs <- GWASHDResults[which(GWASHDResults$PV < (0.05/48635) ),]  
+>SNPs <- SNPs[SNPs\$Chr %in% names(which(table(SNPs\$Chr)>1)),]  
+>SNPs <- SNPs[order(SNPs$PV),]  
+>SNPs <- SNPs[!duplicated(SNPs[,"Chr"]),]  
+>write.table(SNPs[,c("SNP")],"SNPs_50K.txt",row.names=FALSE,col.names=FALSE,quote=FALSE)  
+>q()  
+>  
+>  
+>plink \-\-bfile 50K/AdultHindLeg50K \-\-sheep \-\-not-chr 0,X \-\-exclude-snps SNPs_50K.txt \-\-make-bed \-\-out 50K/Conditional_50K_Geno  
+>plink \-\-bfile HD/AdultHindLegHD \-\-sheep \-\-not-chr X \-\-exclude-snps SNPs_HD.txt \-\-make-bed \-\-out HD/Conditional_HD_Geno  
+>  
+>plink \-\-bfile 50K/AdultHindLeg50K \-\-sheep \-\-snps SNPs_50K.txt \-\-keep AdultHindLegPhenotypes.txt \-\-recodeA \-\-out AdultMetaSNP 
+>cut -d ' ' -f 3-6 \-\-complement AdultMetaSNP.raw > AdultMetaSNP.txt  
+>sed '1d' AdultMetaSNP.txt > AdultMetaSNP2.txt 
+>  
+>sort -k 2,2 AdultHindLegQAssoc.txt > Assoc1.txt  
+>sort -k 2,2 AdultMetaSNP2.txt > Assoc2.txt  
+>  
+>R  
+>Assoc1 = read.table("Assoc1.txt")  
+>Assoc2 = read.table("Assoc2.txt")  
+>Assoc3 = merge(Assoc1,Assoc2,by=c("V1","V2")) 
+>write.table(Assoc3, "Assoc3.txt",row.names=FALSE,col.names=FALSE,quote=FALSE)   
+>q()  
+>  
+>sort -k 2,2 AdultHindLegAssoc.txt > Assoc_50K.txt  
+>sort -k 2,2 Assoc3.txt > QAssoc_50K.txt 
+>  
+>plink \-\-bfile HD/AdultHindLegHD \-\-sheep \-\-snps SNPs_HD.txt \-\-keep AdultHindLegPhenotypes.txt \-\-recodeA \-\-out AdultMetaSNP 
+>cut -d ' ' -f 3-6 \-\-complement AdultMetaSNP.raw > AdultMetaSNP.txt  
+>sed '1d' AdultMetaSNP.txt > AdultMetaSNP2.txt 
+>  
+>sort -k 2,2 AdultHindLegQAssoc.txt > Assoc1.txt  
+>sort -k 2,2 AdultMetaSNP2.txt > Assoc2.txt  
+>  
+>R  
+>Assoc1 = read.table("Assoc1.txt")  
+>Assoc2 = read.table("Assoc2.txt")  
+>Assoc3 = merge(Assoc1,Assoc2,by=c("V1"," V2")) 
+>write.table(Assoc3, "Assoc3.txt",row.names=FALSE,col.names=FALSE,quote=FALSE)    
+>q()  
+>  
+>sort -k 2,2 AdultHindLegAssoc.txt > Assoc_HD.txt  
+>sort -k 2,2 Assoc3.txt > QAssoc_HD.txt 
+
+
+## Heritability Estimates  
+### 50K  
+>#!/bin/sh    
+>#\$\ -cwd  
+>#\$\ -l h_rt=1:00:00  
+>#\$\ -pe sharedmem 1  
+>#\$\ -l h_vmem=100G  
+>#\$\ -M s1944058@sms.ed.ac.uk  
+>#\$\ -m baes    
+>. /etc/profile.d/modules.sh  
+>  
+>module load igmm/apps/dissect/1.15.2c  
+>module load igmm/apps/plink/1.90b4  
+>  
+>mpirun -np 8 dissect.mpich  \-\-reml \-\-bfile 50K/Conditional_50K_Geno  \-\-pheno AdultHindlegPhenotypes.txt \-\-pheno-col 2 \-\-blue \-\-covar Assoc.txt \-\-qcovar QAssoc.txt \-\-random-effects HindlegRandom.txt \-\-random-effects-cols 1 2 3 \-\-out 50K/AdultHindLeg_50K_Conditional_H2  
+>  
+>if [[ -f 50K/AdultHindLeg_50K_Conditional_H2.badsnps ]]  
+>then    
+>plink \-\-bfile 50K/Conditional_50K_Geno \-\-sheep \-\-exclude 50K/AdultHindLeg_50K_Conditional_H2.badsnps \-\-make-bed \-\-out 50K/AdultHindLeg_50K_Conditional_H2  
+>
+>mpirun -np 8 dissect.mpich  \-\-reml \-\-bfile 50K/AdultHindLeg_50K_Conditional_H2 \-\-pheno AdultHindlegPhenotypes.txt \-\-pheno-col 2 \-\-blue \-\-covar Assoc.txt \-\-qcovar QAssoc.txt \-\-random-effects HindlegRandom.txt \-\-random-effects-cols 1 2 3 \-\-out 50K/AdultHindLeg_50K_Conditional_H2  
+>fi 
+
+
+```{r,include=FALSE}
+Assoc <- read.table("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/Hindleg/Adult/50K/AdultHindLeg_50K_Conditional_H2.blue.discrete",header=TRUE)
+Assoc$NAME <- c("Sex")
+SNPs_50K <- read.table("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/Hindleg/Adult/50K/SNPs_50K.txt",header=F)
+bimFile <- read.table("C:/Users/s1944058/Documents/Sheep/50KSNP/Plates_1to87_QC3.bim",header=F)
+SNPs_50K <- merge(SNPs_50K,bimFile[,c(2,1)],by.x="V1",by.y="V2")
+SNPs_50K <- SNPs_50K[order(SNPs_50K$V1.y),]
+SNPs_50K$V2 <- paste0(SNPs_50K$V1," (Chr",SNPs_50K$V1.y,")")
+QAssoc <- read.table("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/Hindleg/Adult/50K/AdultHindLeg_50K_Conditional_H2.blue.quantitative",header=TRUE)
+QAssoc$NAME <- c("Population","Age at death",SNPs_50K[,3])
+FixedEffects_50K <- rbind(Assoc,QAssoc)
+
+Random <- read.csv("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/Hindleg/Adult/50K/AdultHindLeg_50K_Conditional_H2.reml")
+RandomEffects_50K <- cSplit(Random,"X...Summary.results.",sep= " ")
+RandomEffects_50K <- RandomEffects_50K[c(2:5,8),1:3]
+colnames(RandomEffects_50K) <- colnames(FixedEffects_50K)
+```
+```{r}
+FixedEffects_50K
+RandomEffects_50K
+```
+
+### HD  
+>#!/bin/sh    
+>#\$\ -cwd  
+>#\$\ -l h_rt=1:00:00  
+>#\$\ -pe sharedmem 1  
+>#\$\ -l h_vmem=100G  
+>#\$\ -M s1944058@sms.ed.ac.uk  
+>#\$\ -m baes    
+>. /etc/profile.d/modules.sh    
+>  
+>module load igmm/apps/dissect/1.15.2c  
+>module load igmm/apps/plink/1.90b4  
+>  
+>mpirun -np 8 dissect.mpich  \-\-reml \-\-bfile HD/Conditional_HD_Geno \-\-pheno AdultHindlegPhenotypes.txt \-\-pheno-col 2 \-\-blue \-\-covar Assoc.txt \-\-qcovar QAssoc.txt \-\-random-effects HindlegRandom.txt \-\-random-effects-cols 1 2 3 \-\-out HD/AdultHindLeg_HD_Conditional_H2  
+>  
+>if [[ -f HD/AdultHindLeg_HD_Conditional_H2.badsnps ]]  
+>then    
+>plink \-\-bfile HD/Conditional_HD_Geno \-\-sheep \-\-exclude HD/AdultHindLeg_HD_Conditional_H2.badsnps \-\-make-bed \-\-out HD/AdultHindLeg_HD_Conditional_H2  
+>
+>mpirun -np 8 dissect.mpich  \-\-reml \-\-bfile HD/AdultHindLeg_HD_Conditional_H2 \-\-pheno AdultHindlegPhenotypes.txt \-\-pheno-col 2 \-\-blue \-\-covar Assoc.txt \-\-qcovar QAssoc.txt \-\-random-effects HindlegRandom.txt \-\-random-effects-cols 1 2 3 \-\-out HD/AdultHindLeg_HD_Conditional_H2  
+>fi 
+ 
+
+```{r,include=FALSE}
+Assoc <- read.table("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/Hindleg/Adult/HD/AdultHindLeg_HD_Conditional_H2.blue.discrete",header=TRUE)
+Assoc$NAME <- c("Sex")
+SNPs_HD <- read.table("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/Hindleg/Adult/HD/SNPs_HD.txt",header=F)
+bimFile <- read.table("C:/Users/s1944058/Documents/Sheep/HDSNP/HD_QC.bim",header=F)
+SNPs_HD <- merge(SNPs_HD,bimFile[,c(2,1)],by.x="V1",by.y="V2")
+SNPs_HD <- SNPs_HD[order(SNPs_HD$V1.y),]
+SNPs_HD$V2 <- paste0(SNPs_HD$V1," (Chr",SNPs_HD$V1.y,")")
+QAssoc <- read.table("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/Hindleg/Adult/HD/AdultHindLeg_HD_Conditional_H2.blue.quantitative",header=TRUE)
+QAssoc$NAME <- c("Population","Age at death",SNPs_HD[,3])
+FixedEffects_HD <- rbind(Assoc,QAssoc)
+
+Random <- read.csv("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/Hindleg/Adult/HD/AdultHindLeg_HD_Conditional_H2.reml")
+RandomEffects_HD <- cSplit(Random,"X...Summary.results.",sep= " ")
+RandomEffects_HD <- RandomEffects_HD[c(2:5,8),1:3]
+colnames(RandomEffects_HD) <- colnames(FixedEffects_HD)
+```
+```{r}
+FixedEffects_HD
+RandomEffects_HD
+```
+
+### GWAS  
+>#!/bin/sh  
+>#\$\ -cwd  
+>#\$\ -l h_rt=2:00:00  
+>#\$\ -pe sharedmem 1  
+>#\$\ -l h_vmem=200G  
+>#\$\ -t 1-26  
+>#\$\ -tc 5  
+>#\$\ -M s1944058@sms.ed.ac.uk  
+>#\$\ -m baes   
+>. /etc/profile.d/modules.sh  
+>
+>module load igmm/apps/dissect/1.15.2c  
+>module load igmm/apps/plink/1.90b4  
+>  
+>i=\$\SGE_TASK_ID  
+>  
+>plink \-\-bfile 50K/Conditional_50K_Geno \-\-sheep \-\-not-chr \$\{i},X \-\-keep AdultHindlegPhenotypes.txt \-\-make-bed \-\-out 50K/NoChr\$\{i}  
+>  
+>mpirun -np 8 dissect.mpich  \-\-make-grm \-\-bfile 50K/NoChr\$\{i} \-\-out 50K/NoChr\$\{i}_GRM  
+>  
+>echo "50K/Chr\$\{i} 50K/NoChr\$\{i}_GRM" > 50K/GWAS_GRM\$\{i}.txt  
+>  
+>plink \-\-bfile 50K/Conditional_50K_Geno \-\-sheep \-\-chr \$\{i} \-\-keep AdultHindlegPhenotypes.txt \-\-make-bed \-\-out 50K/Chr\$\{i}  
+>  
+>if [[ -f 50K/NoChr\$\{i}_GRM.badsnps ]]  
+>then  
+>plink \-\-bfile 50K/NoChr\$\{i} \-\-sheep \-\-exclude 50K/NoChr\$\{i}_GRM.badsnps  \-\-make-bed \-\-out 50K/NoChr\$\{i}_2  
+>  
+>mpirun -np 8 dissect.mpich  \-\-make-grm \-\-bfile 50K/NoChr\$\{i}_2 \-\-out 50K/NoChr\$\{i}_GRM
+>  
+>fi  
+>  
+>mpirun -np 8 dissect.mpich  \-\-gwas \-\-bfile-grm-list 50K/GWAS_GRM\$\{i}.txt \-\-pheno AdultHindlegPhenotypes.txt \-\-pheno-col 2 \-\-covar Assoc.txt \-\-qcovar QAssoc.txt \-\-random-effects HindlegRandom.txt \-\-random-effects-cols 1 2 3  \-\-out 50K/AdultHindLeg_50K_GWAS_Conditional_Chr\$\{i}  
+>  
+>if [[ -f 50K/AdultHindLeg_50K_GWAS_Conditional_Chr\$\{i}.badsnps ]]  
+>then  
+>plink \-\-bfile 50K/Chr\$\{i} \-\-sheep \-\-exclude 50K/AdultHindLeg_50K_GWAS_Conditional_Chr\$\{i}.badsnps \-\-make-bed \-\-out 50K/Chr\$\{i}_2  
+>  
+>echo "50K/Chr\$\{i}_2 50K/NoChr\$\{i}_GRM" > 50K/GWAS_GRM\$\{i}.txt  
+>  
+> mpirun -np 8 dissect.mpich  \-\-gwas \-\-bfile-grm-list 50K/GWAS_GRM\$\{i}.txt \-\-pheno AdultHindlegPhenotypes.txt \-\-pheno-col 2 \-\-covar Assoc.txt \-\-qcovar QAssoc.txt \-\-random-effects HindlegRandom.txt \-\-random-effects-cols 1 2 3 \-\-out 50K/AdultHindLeg_50K_GWAS_Conditional_Chr\$\{i}    
+> fi 
+
+```{r,fig.width=14}
+files = list.files(pattern="AdultHindLeg_50K_GWAS_Conditional_Chr",recursive=TRUE)
+
+SNPresults = do.call(rbind, lapply(files, function(x) read.table(x,header=T)))
+SNPresults$Effect <- SNPresults$STDEV*SNPresults$STDEV*SNPresults$BETA*SNPresults$BETA
+
+bimFile <- read.table("C:/Users/s1944058/Documents/Sheep/50KSNP/Plates_1to87_QC3.bim",header=F)
+
+GWAS50KResults <- merge(bimFile,SNPresults[,c("SNP","PV","Effect"),],by.x="V2",by.y="SNP",all.x=FALSE,all.y=TRUE)
+colnames(GWAS50KResults) <- c("SNP","Chr","V3","Pos","Ref","Minor","PV","Effect")
+GWAS50KResults$Chr <- as.numeric(GWAS50KResults$Chr)
+par(mfrow=c(1,2))
+manhattan(GWAS50KResults,chr="Chr",bp="Pos",p="PV",snp="SNP", main = "Adult hindleg length Manhattan plot (50K)", genomewideline = -log10(0.05/20082),suggestiveline = FALSE)
+qq(GWAS50KResults$PV,main="Adult hindleg length QQ plot (50K)")
+```
+```{r} 
+SNPs <- GWAS50KResults[which(GWAS50KResults$PV < (0.05/20082) ),c("Chr","Pos","SNP","PV","Effect")]
+SNPs[order(SNPs$PV),]
+table(SNPs$Chr)
+```
+<br/>
+
+### Imputed SNP data
+
+>#!/bin/sh  
+>#\$\ -cwd  
+>#\$\ -l h_rt=3:00:00  
+>#\$\ -pe sharedmem 1  
+>#\$\ -l h_vmem=200G  
+>#\$\ -t 1-26  
+>#\$\ -tc 5  
+>#\$\ -M s1944058@sms.ed.ac.uk  
+>#\$\ -m baes   
+>. /etc/profile.d/modules.sh  
+>
+>module load igmm/apps/dissect/1.15.2c  
+>module load igmm/apps/plink/1.90b4  
+>  
+>i=\$\SGE_TASK_ID  
+>  
+>plink \-\-bfile HD/Conditional_HD_Geno \-\-sheep \-\-not-chr \$\{i},X \-\-keep AdultHindlegPhenotypes.txt \-\-make-bed \-\-out HD/NoChr\$\{i}  
+>  
+>mpirun -np 8 dissect.mpich  \-\-make-grm \-\-bfile HD/NoChr\$\{i} \-\-out HD/NoChr\$\{i}_GRM  
+>  
+>echo "HD/Chr\$\{i} HD/NoChr\$\{i}_GRM" > HD/GWAS_GRM\$\{i}.txt  
+>  
+>plink \-\-bfile HD/Conditional_HD_Geno \-\-sheep \-\-chr \$\{i} \-\-keep AdultHindlegPhenotypes.txt \-\-make-bed \-\-out HD/Chr\$\{i}  
+>  
+>if [[ -f HD/NoChr\$\{i}_GRM.badsnps ]]  
+>then  
+>plink \-\-bfile HD/NoChr\$\{i} \-\-sheep \-\-exclude HD/NoChr\$\{i}_GRM.badsnps  \-\-make-bed \-\-out HD/NoChr\$\{i}_2  
+>  
+>mpirun -np 8 dissect.mpich  \-\-make-grm \-\-bfile HD/NoChr\$\{i}_2 \-\-out HD/NoChr\$\{i}_GRM  
+>  
+>fi  
+>  
+>mpirun -np 8 dissect.mpich  \-\-gwas \-\-bfile-grm-list HD/GWAS_GRM\$\{i}.txt \-\-pheno AdultHindlegPhenotypes.txt \-\-pheno-col 2 \-\-covar Assoc.txt \-\-qcovar QAssoc.txt \-\-random-effects HindlegRandom.txt \-\-random-effects-cols 1 2 3  \-\-out HD/AdultHindLeg_HD_GWAS_Conditional_Chr\$\{i}  
+>  
+>if [[ -f HD/AdultHindLeg_HD_GWAS_Conditional_Chr\$\{i}.badsnps ]]  
+>then  
+>plink \-\-bfile HD/Chr\$\{i} \-\-sheep \-\-exclude HD/AdultHindLeg_HD_GWAS_Conditional_Chr\$\{i}.badsnps \-\-make-bed \-\-out HD/Chr\$\{i}_2  
+>
+>echo "HD/Chr\$\{i}_2 HD/NoChr\$\{i}_GRM" > HD/GWAS_GRM\$\{i}.txt  
+>  
+>mpirun -np 8 dissect.mpich  \-\-gwas \-\-bfile-grm-list HD/GWAS_GRM\$\{i}.txt \-\-pheno AdultHindlegPhenotypes.txt \-\-pheno-col 2 \-\-covar Assoc.txt \-\-qcovar QAssoc.txt \-\-random-effects HindlegRandom.txt \-\-random-effects-cols 1 2 3  \-\-out HD/AdultHindLeg_HD_GWAS_Conditional_Chr\$\{i}    
+>fi 
+ 
+
+```{r,fig.width=14}
+files = list.files(pattern="AdultHindLeg_HD_GWAS_Conditional_Chr",recursive=TRUE)
+
+SNPresults = do.call(rbind, lapply(files, function(x) read.table(x,header=T)))
+SNPresults$Effect <- SNPresults$STDEV*SNPresults$STDEV*SNPresults$BETA*SNPresults$BETA
+
+bimFile <- read.table("C:/Users/s1944058/Documents/Sheep/HDSNP/HD_QC.bim",header=F)
+
+GWASHDResults <- merge(bimFile,SNPresults[,c("SNP","PV","Effect"),],by.x="V2",by.y="SNP",all.x=FALSE,all.y=TRUE)
+colnames(GWASHDResults) <- c("SNP","Chr","V3","Pos","Ref","Minor","PV","Effect")
+GWASHDResults$Chr <- as.numeric(GWASHDResults$Chr)
+par(mfrow=c(1,2))
+manhattan(GWASHDResults,chr="Chr",bp="Pos",p="PV",snp="SNP", main = "Adult hindleg length Manhattan plot (HD)", genomewideline = -log10(0.05/48635),suggestiveline = FALSE)
+qq(GWASHDResults$PV,main="Adult hindleg length QQ plot (HD)")
+```
+```{r} 
+SNPs <- GWASHDResults[which(GWASHDResults$PV < (0.05/48635) ),c("Chr","Pos","SNP","PV","Effect")]
+SNPs[order(SNPs$PV),]
+table(SNPs$Chr)
+```
+<br/>
+
+## **FINAL RESULTS**
+### 50K
+```{r,fig.width=14}
+FixedEffects_50K[c(4,5),]
+par(mfrow=c(1,2))
+manhattan(GWAS50KResults,chr="Chr",bp="Pos",p="PV",snp="SNP", main = "Adult hindleg length Manhattan plot (50K)", genomewideline = -log10(0.05/20082),suggestiveline = FALSE)
+qq(GWAS50KResults$PV,main="Adult hindleg length QQ plot (50K)")
+```
+
+### HD    
+```{r,fig.width=14}
+FixedEffects_HD[c(4,5),]
+par(mfrow=c(1,2))
+manhattan(GWASHDResults,chr="Chr",bp="Pos",p="PV",snp="SNP", main = "Adult hindleg length Manhattan plot (HD)", genomewideline = -log10(0.05/48635),suggestiveline = FALSE)
+qq(GWASHDResults$PV,main="Adult hindleg length QQ plot (HD)")
+```
+```{r, include=FALSE}
+Conditional50KResults <- GWAS50KResults
+bimFile <- read.table("C:/Users/s1944058/Documents/Sheep/50KSNP/Plates_1to87_QC3.bim",header=F)
+files = list.files(pattern="AdultHindLeg_50K_GWAS_Chr",recursive=TRUE)
+SNPresults = do.call(rbind, lapply(files, function(x) read.table(x,header=T)))
+GWAS50KResults <- merge(bimFile,SNPresults[,c("SNP","PV"),],by.x="V2",by.y="SNP",all.x=FALSE,all.y=TRUE)
+colnames(GWAS50KResults) <- c("SNP","Chr","V3","Pos","Ref","Minor","PV")
+GWAS50KResults$Chr <- as.numeric(GWAS50KResults$Chr)
+
+ConditionalHDResults <- GWASHDResults
+bimFile <- read.table("C:/Users/s1944058/Documents/Sheep/HDSNP/HD_QC.bim",header=F)
+files = list.files(pattern="AdultHindLeg_HD_GWAS_Chr",recursive=TRUE)
+SNPresults = do.call(rbind, lapply(files, function(x) read.table(x,header=T)))
+GWASHDResults <- merge(bimFile,SNPresults[,c("SNP","PV"),],by.x="V2",by.y="SNP",all.x=FALSE,all.y=TRUE)
+colnames(GWASHDResults) <- c("SNP","Chr","V3","Pos","Ref","Minor","PV")
+GWASHDResults$Chr <- as.numeric(GWASHDResults$Chr)
+
+png(file="C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/Hindleg/Adult_Hindleg_GWAS_Conditional.png",width=827,height=583)
+par(mfrow=c(2,2),oma=c(0,0,2,0))
+par(mar=c(0,5,3,3))
+manhattan(GWAS50KResults,ylim=c(0,15),chr="Chr",bp="Pos",p="PV",snp="SNP", genomewideline = -log10(0.05/20082),suggestiveline = FALSE)
+mtext(text = "Original GWAS, 50K SNP data",
+      side = 3,
+      line = 0)
+manhattan(GWASHDResults,ylim=c(0,15),chr="Chr",bp="Pos",p="PV",snp="SNP", genomewideline = -log10(0.05/48635),suggestiveline = FALSE)
+mtext(text = "Original GWAS, imputed SNP data",
+      side = 3,
+      line = 0)
+par(mar=c(5,5,2,3))
+manhattan(Conditional50KResults,ylim=c(15,0),chr="Chr",bp="Pos",p="PV",snp="SNP", genomewideline = -log10(0.05/20082),suggestiveline = FALSE,xlab=" ",xaxt="n")
+mtext(text = "Conditional Analysis, 50K SNP data",
+      side = 1,
+      line = 0)
+manhattan(ConditionalHDResults,ylim=c(15,0),chr="Chr",bp="Pos",p="PV",snp="SNP", genomewideline = -log10(0.05/48635),suggestiveline = FALSE,xlab=" ",xaxt="n")
+mtext(text = "Conditional Analysis, imputed SNP data",
+      side = 1,
+      line = 0)
+mtext("Adult hindleg length conditional GWAS analysis",outer=TRUE,cex=1.5)
+
+dev.off()
+```
