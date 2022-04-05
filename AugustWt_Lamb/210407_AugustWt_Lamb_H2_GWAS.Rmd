@@ -1,0 +1,398 @@
+---
+title: "Lamb August weight - Heritability estimate and GWAS"
+author: "Caelinn James"
+date: "07 April 2021"
+output:
+ html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+**Written for R `r getRversion()`, last updated `r format(Sys.time(), '%d/%m/%y')`**  
+<br/>
+
+### Load packages
+```{r, message = FALSE, warning = FALSE}
+library(RODBC)
+library(data.table)
+library(stringr)
+library(splitstackshape)
+library(qqman)
+```
+<br/>
+
+### Connect to the database
+
+Note that from database front end version 2.22, it is important to click "Make R Friendly" in the queries section before running the analysis, or loading the pedigree will not work (will not work at all for prior front end versions)
+
+```{r}
+dv <- "C:/Users/s1944058/Documents/Sheep/Database/SoaySheep2.30.accdb"
+con <- odbcConnectAccess2007(dv)
+tbls <- sqlTables(con)
+capturedata <- sqlFetch(con,"CaptureData")
+sheep <- sqlFetch(con,"sys_SheepPlusBirthInfo")
+```
+Check to see if the files have loaded correctly (don't worry about negative IDs or lots of NAs)...  
+First the capture data file....
+```{r}
+head(capturedata)
+```
+Then the sheep file...
+```{r}
+head(sheep)
+```
+<br/>
+
+### Filter the data 
+Firstly, only include records of capture events that measured the weight.
+```{r}
+capturedataall <- merge(sheep,capturedata,by.x="ID")
+capturedataall <- capturedataall[!is.na(capturedataall$Weight),]
+```
+
+We are only interested in the capture events that happened in August and to lambs
+```{r}
+capturedataall<- capturedataall[which(capturedataall$CapMonth == 8),]
+
+capturedataall$Age <- capturedataall$CapYear - capturedataall$BirthYear
+capturedataall$Age <- as.numeric(capturedataall$Age)
+capturedataall <- capturedataall[!is.na(capturedataall$Age),]
+capturedataall <- capturedataall[which(capturedataall$Age < 1),]
+capturedataall <- capturedataall[!is.na(capturedataall$BirthWt),]
+
+table(table(capturedataall$ID))
+```
+We need to remove the duplicated weights
+
+```{r}
+capturedataall <- capturedataall[!duplicated(capturedataall$ID),]
+```
+```{r}
+capturedataall$Sex[capturedataall$Sex == 3] <- 2
+capturedataall <- capturedataall[!is.na(capturedataall$Sex),]
+capturedataall$Sex <- as.factor(capturedataall$Sex)
+capturedataall <- capturedataall[which(capturedataall$SibCount < 2),]
+capturedataall$SibCount <- as.factor(capturedataall$SibCount)
+
+Villdens <- sqlFetch(con,"HirtaVillPop")
+capturedataall <- merge(capturedataall,Villdens[,c("VillTotal","Year")],by.x="CapYear",by.y="Year",all.x=T)
+capturedataall <- capturedataall[!is.na(capturedataall$VillTotal),]
+```
+
+```{r}
+SNPs_50K <- read.table("~/Documents/Sheep/50KSNP/Plates_1to87_QC3.fam")
+capturedataall <- capturedataall[which(capturedataall$ID %in% SNPs_50K$V2),]
+SNPs_HD <- read.table("~/Documents/Sheep/HDSNP/HD_QC.fam")
+capturedataall <- capturedataall[which(capturedataall$ID %in% SNPs_HD$V2),]
+```
+
+Calculate the age of the sheep in days of how old they are
+```{r}
+capturedataall <- capturedataall[!is.na(capturedataall$BirthMonth),]
+capturedataall <- capturedataall[!is.na(capturedataall$BirthDay),]
+capturedataall$BirthDate <- paste0(capturedataall$BirthYear,"/",capturedataall$BirthMonth,"/",capturedataall$BirthDay)
+
+capturedataall$Date <- as.numeric(format(as.Date(capturedataall$BirthDate),"%j"))
+capturedataall$CapDate <- paste0(capturedataall$CapYear,"/",capturedataall$CapMonth,"/",capturedataall$CapDay)
+capturedataall$AgeDate <- as.numeric(format(as.Date(capturedataall$CapDate),"%j"))
+
+capturedataall$AugCapAge <- capturedataall$AgeDate - capturedataall$Date
+```
+
+This leaves us with __`r nrow(capturedataall)`__ individuals, and the following distribution of weight:
+```{r}
+hist(capturedataall$Weight,xlab="Weight (kg)",main="Lamb August weight (kg)")
+```
+
+We will now save a list of phenotypes, fixed effects and random effects. First:
+```{r, message = FALSE, warning = FALSE,error=FALSE,results='hide'}
+LambweightPhenotypes <- cbind(rep(1,nrow(capturedataall)),as.numeric(as.character(capturedataall$ID)),(capturedataall$Weight))
+
+LambweightAssoc <- cbind(rep(1,nrow(capturedataall)),as.character(capturedataall$ID),capturedataall$Sex,capturedataall$SibCount)
+
+LambweightQAssoc <-cbind(rep(1,nrow(capturedataall)),as.character(capturedataall$ID),capturedataall$VillTotal,capturedataall$AugCapAge)
+
+LambweightRandom <-cbind(rep(1,nrow(capturedataall)),as.character(capturedataall$ID),capturedataall$CapYear,capturedataall$MumID)
+colnames(LambweightRandom) <- c("FID","IID","BirthYear","MumID")
+
+
+write.table(LambweightPhenotypes,file="~/Documents/Sheep/R/H2_GWAS/AugustWeight/LambWeightPhenotypes.txt",row.names = F,col.names = F,quote = F)
+
+write.table(LambweightAssoc,file="~/Documents/Sheep/R/H2_GWAS/AugustWeight/LambWeightAssoc.txt",row.names = F,col.names = F,quote = F)
+
+write.table(LambweightQAssoc,file="~/Documents/Sheep/R/H2_GWAS/AugustWeight/LambWeightQAssoc.txt",row.names = F,col.names = F,quote = F)
+
+write.table(LambweightRandom,file="~/Documents/Sheep/R/H2_GWAS/AugustWeight/LambWeightRandom.txt",row.names = F,col.names = T,quote = F)
+```
+
+## Prep the genotype files  
+>#!/bin/sh  
+>#\$\ -cwd  
+>#\$\ -l h_rt=0:30:00  
+>#\$\ -pe sharedmem 1  
+>#\$\ -l h_vmem=50G
+>  
+>sort -k 3,3 LambWeightPhenotypes.txt > Pheno150K.txt  
+>awk '($2 >0)' ../InputData/Plates_1to87_QC3.ped > Ped150K.ped  
+>sort -k 2,2 Ped150K.ped > Ped250K.ped  
+>join -1 3 -2 2 Pheno150K.txt Ped250K.ped > Ped350K.ped  
+>cut -d ' ' -f 1,4,5 --complement Ped350K.ped > LambWeight50K.ped  
+>  
+>sort -k 3,3 LambWeightPhenotypes.txt > Pheno1HD.txt  
+>awk '($2 >0)' ../InputData/HD_QC.ped > Ped1HD.ped  
+>sort -k 2,2 Ped1HD.ped > Ped2HD.ped  
+>join -1 3 -2 2 Pheno1HD.txt Ped2HD.ped > Ped3HD.ped  
+>cut -d ' ' -f 1,4,5 --complement Ped3HD.ped > LambWeightHD.ped  
+
+## Heritability Estimates  
+### 50K
+>#!/bin/sh    
+>#\$\ -cwd  
+>#\$\ -l h_rt=1:00:00  
+>#\$\ -pe sharedmem 1  
+>#\$\ -l h_vmem=100G  
+>#\$\ -M s1944058@sms.ed.ac.uk  
+>#\$\ -m baes    
+>. /etc/profile.d/modules.sh  
+>  
+>module load igmm/apps/dissect/1.15.2c  
+>module load igmm/apps/plink/1.90b4  
+>  
+>plink --file ../InputData/Plates_1to87_QC3 \-\-ped LambWeight50K.ped \-\-sheep \-\-not-chr 0,X \-\-make-bed \-\-out 50K/LambWeight50K  
+>  
+>mpirun -np 8 dissect.mpich  \-\-reml \-\-bfile 50K/LambWeight50K  \-\-pheno LambWeightPhenotypes.txt \-\-pheno-col 2 \-\-blue \-\-covar LambWeightAssoc.txt \-\-qcovar LambWeightQAssoc.txt \-\-random-effects LambWeightRandom.txt \-\-random-effects-cols 1 2 3 \-\-out 50K/LambWeight_50K_H2  
+>  
+>if [[ -f 50K/LambWeight_50K_H2.badsnps ]]  
+>then    
+>plink \-\-bfile ../InputData/Plates_1to87_QC3 \-\-sheep \-\-exclude 50K/LambWeight_50K_H2.badsnps \-\-make-bed \-\-out 50K/LambWeight_50K_H2  
+>
+>mpirun -np 8 dissect.mpich  \-\-reml \-\-bfile 50K/LambWeight_50K_H2 \-\-pheno LambWeightPhenotypes.txt \-\-pheno-col 2 \-\-blue \-\-covar LambWeightAssoc.txt \-\-qcovar LambWeightQAssoc.txt \-\-random-effects LambWeightRandom.txt \-\-random-effects-cols 1 2 3 \-\-out 50K/LambWeight_50K_H2  
+>fi 
+
+
+```{r,include=FALSE}
+Assoc <- read.table("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/AugustWeight/Lamb/50K/LambWt_50K_H2.blue.discrete",header=TRUE)
+Assoc$NAME <- c("Sex","Twins")
+QAssoc <- read.table("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/AugustWeight/Lamb/50K/LambWt_50K_H2.blue.quantitative",header=TRUE)
+QAssoc$NAME <- c("Population","Age (days)")
+FixedEffects_50K <- rbind(Assoc,QAssoc)
+
+Random <- read.csv("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/AugustWeight/Lamb/50K/LambWt_50K_H2.reml")
+RandomEffects_50K <- cSplit(Random,"X...Summary.results.",sep= " ")
+RandomEffects_50K <- RandomEffects_50K[c(2:6,9),1:3]
+colnames(RandomEffects_50K) <- colnames(FixedEffects_50K)
+```
+```{r}
+FixedEffects_50K
+RandomEffects_50K
+```
+
+### HD
+>#!/bin/sh    
+>#\$\ -cwd  
+>#\$\ -l h_rt=1:00:00  
+>#\$\ -pe sharedmem 1  
+>#\$\ -l h_vmem=100G  
+>#\$\ -M s1944058@sms.ed.ac.uk  
+>#\$\ -m baes    
+>. /etc/profile.d/modules.sh  
+>  
+>module load igmm/apps/dissect/1.15.2c  
+>module load igmm/apps/plink/1.90b4  
+>  
+>plink --file ../InputData/HD_QC \-\-ped LambWeightHD.ped \-\-sheep \-\-not-chr 0,X \-\-make-bed \-\-out HD/LambWeightHD  
+>  
+>mpirun -np 8 dissect.mpich  \-\-reml \-\-bfile HD/LambWeightHD  \-\-pheno LambWeightPhenotypes.txt \-\-pheno-col 2 \-\-blue \-\-covar LambWeightAssoc.txt \-\-qcovar LambWeightQAssoc.txt \-\-random-effects LambWeightRandom.txt \-\-random-effects-cols 1 2 3 \-\-out HD/LambWeight_HD_H2  
+>  
+>if [[ -f HD/LambWeight_HD_H2.badsnps ]]  
+>then    
+>plink \-\-bfile ../InputData/Plates_1to87_QC3 \-\-sheep \-\-exclude HD/LambWeight_HD_H2.badsnps \-\-make-bed \-\-out HD/LambWeight_HD_H2  
+>
+>mpirun -np 8 dissect.mpich  \-\-reml \-\-bfile HD/LambWeight_HD_H2 \-\-pheno LambWeightPhenotypes.txt \-\-pheno-col 2 \-\-blue \-\-covar LambWeightAssoc.txt \-\-qcovar LambWeightQAssoc.txt \-\-random-effects LambWeightRandom.txt \-\-random-effects-cols 1 2 3 \-\-out HD/LambWeight_HD_H2  
+>fi 
+> 
+
+
+```{r,include=FALSE}
+Assoc <- read.table("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/AugustWeight/Lamb/HD/LambWt_HD_H2.blue.discrete",header=TRUE)
+Assoc$NAME <- c("Sex","Twins")
+QAssoc <- read.table("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/AugustWeight/Lamb/HD/LambWt_HD_H2.blue.quantitative",header=TRUE)
+QAssoc$NAME <- c("Population","Age (days)")
+FixedEffects_HD <- rbind(Assoc,QAssoc)
+
+Random <- read.csv("C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/AugustWeight/Lamb/HD/LambWt_HD_H2.reml")
+RandomEffects_HD <- cSplit(Random,"X...Summary.results.",sep= " ")
+RandomEffects_HD <- RandomEffects_HD[c(2:6,9),1:3]
+colnames(RandomEffects_HD) <- colnames(FixedEffects_HD)
+```
+```{r}
+FixedEffects_HD
+RandomEffects_HD
+```
+### GWAS  
+>#!/bin/sh  
+>#\$\ -cwd  
+>#\$\ -l h_rt=2:00:00  
+>#\$\ -pe sharedmem 1  
+>#\$\ -l h_vmem=200G  
+>#\$\ -t 1-26  
+>#\$\ -tc 5  
+>#\$\ -M s1944058@sms.ed.ac.uk  
+>#\$\ -m baes   
+>. /etc/profile.d/modules.sh  
+>
+>module load igmm/apps/dissect/1.15.2c  
+>module load igmm/apps/plink/1.90b4  
+>  
+>i=\$\SGE_TASK_ID  
+>  
+>plink \-\-bfile ../InputData/Plates_1to87_QC3 \-\-ped LambWeight50K.ped \-\-sheep \-\-not-chr \$\{i},X \-\-keep LambWeightPhenotypes.txt \-\-make-bed \-\-out 50K/NoChr\$\{i}  
+>  
+>mpirun -np 8 dissect.mpich  \-\-make-grm \-\-bfile 50K/NoChr\$\{i} \-\-out 50K/NoChr\$\{i}_GRM  
+>  
+>echo "50K/Chr\$\{i} 50K/NoChr\$\{i}_GRM" > 50K/GWAS_GRM\$\{i}.txt  
+>  
+>plink \-\-bfile ../InputData/Plates_1to87_QC3 \-\-ped LambWeight50K.ped \-\-sheep \-\-chr \$\{i} \-\-keep LambWeightPhenotypes.txt \-\-make-bed \-\-out 50K/Chr\$\{i}  
+>  
+>if [[ -f 50K/NoChr\$\{i}_GRM.badsnps ]]  
+>then  
+>plink \-\-bfile 50K/NoChr\$\{i} \-\-sheep \-\-exclude 50K/NoChr\$\{i}_GRM.badsnps  \-\-make-bed \-\-out 50K/NoChr\$\{i}_2  
+>  
+>mpirun -np 8 dissect.mpich  \-\-make-grm \-\-bfile 50K/NoChr\$\{i}_2 \-\-out 50K/NoChr\$\{i}_GRM
+>  
+>fi  
+>  
+>mpirun -np 8 dissect.mpich  \-\-gwas \-\-bfile-grm-list 50K/GWAS_GRM\$\{i}.txt \-\-pheno LambWeightPhenotypes.txt \-\-pheno-col 2 \-\-covar LambWeightAssoc.txt \-\-qcovar LambWeightQAssoc.txt \-\-random-effects LambWeightRandom.txt \-\-random-effects-cols 1 2 3  \-\-out 50K/LambWeight_50K_GWAS_Chr\$\{i}  
+>  
+>if [[ -f 50K/LambWeight_50K_GWAS_Chr\$\{i}.badsnps ]]  
+>then  
+>plink \-\-bfile 50K/Chr\$\{i} \-\-sheep \-\-exclude 50K/LambWeight_50K_GWAS_Chr\$\{i}.badsnps \-\-make-bed \-\-out 50K/Chr\$\{i}_2  
+>  
+>echo "50K/Chr\$\{i}_2 50K/NoChr\$\{i}_GRM" > 50K/GWAS_GRM\$\{i}.txt  
+>  
+> mpirun -np 8 dissect.mpich  \-\-gwas \-\-bfile-grm-list 50K/GWAS_GRM\$\{i}.txt \-\-pheno LambWeightPhenotypes.txt \-\-pheno-col 2 \-\-covar LambWeightAssoc.txt \-\-qcovar LambWeightQAssoc.txt \-\-random-effects LambWeightRandom.txt \-\-random-effects-cols 1 2 3 \-\-out 50K/LambWeight_50K_GWAS_Chr\$\{i}    
+> fi 
+
+```{r,fig.width=14}
+files = list.files(pattern="LambWeight_50K_GWAS_Chr",recursive=TRUE)
+
+SNPresults = do.call(rbind, lapply(files, function(x) read.table(x,header=T)))
+
+bimFile <- read.table("C:/Users/s1944058/Documents/Sheep/50KSNP/Plates_1to87_QC3.bim",header=F)
+
+GWAS50KResults <- merge(bimFile,SNPresults[,c("SNP","PV"),],by.x="V2",by.y="SNP",all.x=FALSE,all.y=TRUE)
+colnames(GWAS50KResults) <- c("SNP","Chr","V3","Pos","Ref","Minor","PV")
+GWAS50KResults$Chr <- as.numeric(GWAS50KResults$Chr)
+par(mfrow=c(1,2))
+manhattan(GWAS50KResults,chr="Chr",bp="Pos",p="PV",snp="SNP", main = "Lamb August weight Manhattan plot (50K)", genomewideline = -log10(0.05/20082),suggestiveline = FALSE)
+qq(GWAS50KResults$PV,main="Lamb August weight QQ plot (50K)")
+```
+```{r} 
+SNPs <- GWAS50KResults[which(GWAS50KResults$PV < (0.05/20082) ),c("Chr","Pos","SNP","PV")]
+SNPs[order(SNPs$PV),]
+table(SNPs$Chr)
+```
+<br/>
+
+### Imputed SNP data
+
+>#!/bin/sh  
+>#\$\ -cwd  
+>#\$\ -l h_rt=3:00:00  
+>#\$\ -pe sharedmem 1  
+>#\$\ -l h_vmem=200G  
+>#\$\ -t 1-26  
+>#\$\ -tc 5  
+>#\$\ -M s1944058@sms.ed.ac.uk  
+>#\$\ -m baes   
+>. /etc/profile.d/modules.sh  
+>
+>module load igmm/apps/dissect/1.15.2c  
+>module load igmm/apps/plink/1.90b4  
+>  
+>i=\$\SGE_TASK_ID  
+>  
+>plink \-\-bfile ../InputData/HD_QC \-\-ped LambWeightHD.ped \-\-sheep \-\-not-chr \$\{i},X \-\-keep LambWeightPhenotypes.txt \-\-make-bed \-\-out HD/NoChr\$\{i}  
+>  
+>mpirun -np 8 dissect.mpich  \-\-make-grm \-\-bfile HD/NoChr\$\{i} \-\-out HD/NoChr\$\{i}_GRM  
+>  
+>echo "HD/Chr\$\{i} HD/NoChr\$\{i}_GRM" > HD/GWAS_GRM\$\{i}.txt  
+>  
+>plink \-\-bfile ../InputData/HD_QC \-\-ped LambWeightHD.ped \-\-sheep \-\-chr \$\{i} \-\-keep LambWeightPhenotypes.txt \-\-make-bed \-\-out HD/Chr\$\{i}  
+>  
+>if [[ -f HD/NoChr\$\{i}_GRM.badsnps ]]  
+>then  
+>plink \-\-bfile HD/NoChr\$\{i} \-\-sheep \-\-exclude HD/NoChr\$\{i}_GRM.badsnps  \-\-make-bed \-\-out HD/NoChr\$\{i}_2  
+>  
+>mpirun -np 8 dissect.mpich  \-\-make-grm \-\-bfile HD/NoChr\$\{i}_2 \-\-out HD/NoChr\$\{i}_GRM  
+>  
+>fi  
+>  
+>mpirun -np 8 dissect.mpich  \-\-gwas \-\-bfile-grm-list HD/GWAS_GRM\$\{i}.txt \-\-pheno LambWeightPhenotypes.txt \-\-pheno-col 2 \-\-covar LambWeightAssoc.txt \-\-qcovar LambWeightQAssoc.txt \-\-random-effects LambWeightRandom.txt \-\-random-effects-cols 1 2 3  \-\-out HD/LambWeight_HD_GWAS_Chr\$\{i}  
+>  
+>if [[ -f HD/LambWeight_HD_GWAS_Chr\$\{i}.badsnps ]]  
+>then  
+>plink \-\-bfile HD/Chr\$\{i} \-\-sheep \-\-exclude HD/LambWeight_HD_GWAS_Chr\$\{i}.badsnps \-\-make-bed \-\-out HD/Chr\$\{i}_2  
+>
+>echo "HD/Chr\$\{i}_2 HD/NoChr\$\{i}_GRM" > HD/GWAS_GRM\$\{i}.txt  
+>  
+>mpirun -np 8 dissect.mpich  \-\-gwas \-\-bfile-grm-list HD/GWAS_GRM\$\{i}.txt \-\-pheno LambWeightPhenotypes.txt \-\-pheno-col 2 \-\-covar LambWeightAssoc.txt \-\-qcovar LambWeightQAssoc.txt \-\-random-effects LambWeightRandom.txt \-\-random-effects-cols 1 2 3  \-\-out HD/LambWeight_HD_GWAS_Chr\$\{i}    
+>fi 
+ 
+
+```{r,fig.width=14}
+files = list.files(pattern="LambWeight_HD_GWAS_Chr",recursive=TRUE)
+
+SNPresults = do.call(rbind, lapply(files, function(x) read.table(x,header=T)))
+
+bimFile <- read.table("C:/Users/s1944058/Documents/Sheep/HDSNP/HD_QC.bim",header=F)
+
+GWASHDResults <- merge(bimFile,SNPresults[,c("SNP","PV"),],by.x="V2",by.y="SNP",all.x=FALSE,all.y=TRUE)
+colnames(GWASHDResults) <- c("SNP","Chr","V3","Pos","Ref","Minor","PV")
+GWASHDResults$Chr <- as.numeric(GWASHDResults$Chr)
+par(mfrow=c(1,2))
+manhattan(GWASHDResults,chr="Chr",bp="Pos",p="PV",snp="SNP", main = "Lamb August weight Manhattan plot (HD)", genomewideline = -log10(0.05/48635),suggestiveline = FALSE)
+qq(GWASHDResults$PV,main="Lamb August weight QQ plot (HD)")
+```
+```{r} 
+SNPs <- GWASHDResults[which(GWASHDResults$PV < (0.05/48635) ),c("Chr","Pos","SNP","PV")]
+SNPs[order(SNPs$PV),]
+table(SNPs$Chr)
+```
+<br/>
+
+## **FINAL RESULTS**
+### 50K
+```{r,fig.width=14}
+RandomEffects_50K[nrow(RandomEffects_50K),]
+par(mfrow=c(1,2))
+manhattan(GWAS50KResults,chr="Chr",bp="Pos",p="PV",snp="SNP", main = "Lamb August weight Manhattan plot (50K)", genomewideline = -log10(0.05/20082),suggestiveline = FALSE)
+qq(GWAS50KResults$PV,main="Lamb August weight QQ plot (50K)")
+```
+
+### HD    
+```{r,fig.width=14}
+RandomEffects_HD[nrow(RandomEffects_HD),]
+par(mfrow=c(1,2))
+manhattan(GWASHDResults,chr="Chr",bp="Pos",p="PV",snp="SNP", main = "Lamb August weight Manhattan plot (HD)", genomewideline = -log10(0.05/48635),suggestiveline = FALSE)
+qq(GWASHDResults$PV,main="Lamb August weight QQ plot (HD)")
+```
+
+```{r, include=FALSE}
+png(file="C:/Users/s1944058/Documents/Sheep/R/H2_GWAS/AugustWeight/Lamb_August_weight_GWAS.png",width=827,height=583)
+par(mfcol=c(2,2),oma=c(0,0,2,0))
+par(mar=c(0,5,3,3))
+manhattan(GWAS50KResults,chr="Chr",bp="Pos",p="PV",snp="SNP", main = "50K SNP data", genomewideline = -log10(0.05/20082),suggestiveline = FALSE,ylim=c(0,6))
+par(mar=c(5,7,3,5))
+qq(GWAS50KResults$PV,ylim=c(0,6),xlim=c(0,6))
+par(mar=c(0,5,3,3))
+
+manhattan(GWASHDResults,chr="Chr",bp="Pos",p="PV",snp="SNP", main = "Imputed SNP data", genomewideline = -log10(0.05/48635),suggestiveline = FALSE,ylim=c(0,6))
+par(mar=c(5,7,3,5))
+
+qq(GWASHDResults$PV,ylim=c(0,6),xlim=c(0,6))
+mtext("Birth weight GWAS",outer=TRUE,cex=1.5)
+
+dev.off()
+```
