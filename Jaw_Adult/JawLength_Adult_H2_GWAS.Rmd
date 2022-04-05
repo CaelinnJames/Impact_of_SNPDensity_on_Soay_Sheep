@@ -1,7 +1,6 @@
 ---
 title: "Adult Jaw Length - Heritability estimate and GWAS"
 author: "Caelinn James"
-date: "24 March 2021"
 output:
  html_document: default
 ---
