@@ -1,7 +1,6 @@
 ---
 title: "Lamb August weight - Heritability estimate and GWAS"
 author: "Caelinn James"
-date: "07 April 2021"
 output:
  html_document: default
 ---
