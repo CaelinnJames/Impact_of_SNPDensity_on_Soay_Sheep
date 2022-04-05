@@ -1,7 +1,6 @@
 ---
 title: "Lamb Hindleg Length - Heritability estimate and GWAS Conditional Analysis"
 author: "Caelinn James"
-date: "02 April 2021"
 output:
  html_document: default
 ---
