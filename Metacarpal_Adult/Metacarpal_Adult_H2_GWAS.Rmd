@@ -1,7 +1,6 @@
 ---
 title: "Adult Metacarpal Length - Heritability estimate and GWAS"
 author: "Caelinn James"
-date: "31 March 2021"
 output:
  html_document: default
 ---
