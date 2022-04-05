@@ -1,4 +1,4 @@
-# Impact_of_SNPDensity_on_Soay_Sheep
+# The impact of SNP density on quantitative genetic analyses of body size traits in a wild population of Soay sheep
 Scripts and input data for James et. al (https://doi.org/10.1101/2022.03.07.483376)
 
 Analyses are grouped by trait/age class. Adult trait folders include files for the two-step GWAS approach, and traits we performed conditional analysis on also include these files. 
