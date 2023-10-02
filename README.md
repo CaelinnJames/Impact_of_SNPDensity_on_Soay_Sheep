@@ -23,4 +23,4 @@ Analyses are grouped by trait/age class. Adult trait folders include files for t
 
 Three traits (adult August weight, adult foreleg length and adult hindleg length) are repeatability models - these traits have additional scripts to create the reformatted .ped file for these analyses. Phenotype and fixed + random effect files are already formatted for the repeatability model format.
 
-Please email me at s1944058@ed.ac.uk if you would like more information/have any questions
+Please email me at caelinnj@gmail.com if you would like more information/have any questions
